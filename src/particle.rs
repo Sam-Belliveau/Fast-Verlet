@@ -1,6 +1,5 @@
 
 use crate::constants::*;
-use crate::aabb::*;
 use sfml::graphics::Color;
 
 #[derive(Debug, Clone)]
@@ -29,7 +28,7 @@ impl Particle {
         let vel = (self.pos - self.prev_pos) / self.prev_dt;
         let accel = accel - vel * 0.0;
 
-        self.pos = (vel + accel * dt) * dt + pos;
+        self.pos = pos + vel * (dt) + accel * (dt * dt);
         self.prev_pos = pos;
         self.prev_dt = dt;
     }
@@ -38,26 +37,12 @@ impl Particle {
         let delta = self.pos - other.pos;
         let space = self.radius + other.radius;
 
-        if delta.y.abs() > self.radius + other.radius { return; }
+        let distance = delta.length_sq().sqrt().max(1.0);
 
-        let distance = delta.length_sq();
-        let ratio = space * space / distance;
-
-        let push = delta * ((ratio.sqrt() - 1.0) * 0.5 * kCollisionPressure).max(0.0);
-        self.pos += push;
-        other.pos -= push;
-    }
-}
-
-unsafe impl Sync for Particle {}
-unsafe impl Send for Particle {}
-
-impl Bounded for Particle {
-    fn min(&self) -> Vec2 {
-        self.pos - Vec2::new(self.radius, self.radius)
-    }
-
-    fn max(&self) -> Vec2 {
-        self.pos + Vec2::new(self.radius, self.radius)
+        if distance < space {
+            let push = delta * (((space / distance) - 1.0) * 0.5 * K_COLLISION_PRESSURE).max(0.0);
+            self.pos += push;
+            other.pos -= push;
+        }
     }
 }

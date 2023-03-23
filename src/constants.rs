@@ -7,4 +7,4 @@ pub type Vec3 = Vector3<f64>;
 
 pub type Secs = f64;
 
-pub const kCollisionPressure : f64 = 1.0 / 2.0;
+pub const K_COLLISION_PRESSURE : f64 = 1.0 / 2.0;

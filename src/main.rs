@@ -1,12 +1,13 @@
+#![feature(drain_filter)]
+
 extern crate sfml;
 
 pub mod constants;
 
 pub mod stopwatch;
 pub mod particle;
+
 pub mod simulation;
-pub mod aabb;
-pub mod aabb_tree;
 
 use std::f64::consts::PI;
 
@@ -17,48 +18,44 @@ use particle::Particle;
 use stopwatch::StopWatch;
 
 use sfml::graphics::{RenderWindow, RenderTarget, Color};
-use sfml::window::{Style, Event};
+use sfml::window::{Style, Event, mouse};
 
-fn color(t: f64) -> Color {
+fn color(t: &mut f64) -> Color {
+    *t += 3.88322208;
     Color::rgb(
-        (127.0 + 127.0 * (t + 0.0 * PI / 3.0).sin()) as u8,
-        (127.0 + 127.0 * (t + 2.0 * PI / 3.0).sin()) as u8,
-        (127.0 + 127.0 * (t + 4.0 * PI / 3.0).sin()) as u8,
+        (127.0 + 127.0 * (*t + 0.0 * PI / 3.0).sin()) as u8,
+        (127.0 + 127.0 * (*t + 2.0 * PI / 3.0).sin()) as u8,
+        (127.0 + 127.0 * (*t + 4.0 * PI / 3.0).sin()) as u8,
     )
 }
 
 fn main() {
     let mut window = RenderWindow::new(
-        (3600, 1200),
+        (3600, 2400),
         "SFML Example",
         Style::CLOSE,
         &Default::default(),
     );
 
-    // window.set_framerate_limit(20);
+    window.set_framerate_limit(60);
 
-    let mut simulation = Simulator::new(Vec2::new(3600.0, 1200.0));
+    let mut simulation = Simulator::new(Vec2::new(3600.0, 2400.0), Box::new(|_|{
+        // let offset = particle.pos - Vec2::new(1800.0, 1200.0);
+
+        // offset / offset.length_sq().max(10.0) * -10000000.0
+        Vec2::new(0.0, 1000.0)
+    }));
+
     let mut timer = StopWatch::new();
-    let mut ctimer = StopWatch::new();
-    let mut ptimer = StopWatch::new();
+    let mut fc = 0.0;
     let mut f = 0;
     let mut p = 0;
-    let mut b = false;
-    let mut mx = 0.0;
-    let mut my = 0.0;
-    let mut render = 0.02;
+    let mut physics_avg = 0.00;
     while window.is_open() {
         while let Some(event) = window.poll_event() {
             match event {
                 Event::Closed => window.close(),
-                Event::MouseButtonPressed { button, x, y } => {
-                    mx = x as f64;
-                    my = y as f64;
-                    b = true;
-                    f = 1000;
-                },
-                Event::MouseButtonReleased { button, x, y } => b = false,
-                Event::KeyPressed { code, alt, ctrl, shift, system } => {p = 0; simulation.clear();},
+                Event::KeyPressed { .. } => {fc = 0.0; p = 0; simulation.clear();},
                 _ => (),
             }
         }
@@ -67,30 +64,40 @@ fn main() {
 
 
         timer.reset();
-        simulation.step_substeps(0.01, 8);
+        simulation.step_substeps(1.0 / 120.0, 4);
         let physics = timer.reset();
+        physics_avg += (physics - physics_avg) * 0.5;
         simulation.draw(&mut window);
-        render = timer.reset();
+        timer.reset();
 
-        if b { f += 1; }
-        if f > 1 {
-            for x in -0..1 {
-                for y in -10..10 {
-                    p += 1;
-                    simulation.add(
-                        Particle::new(
-                            Vec2::new(mx + 50.0 * (x as f64) + 0.0 * 20.0 * (((y as i32).abs() % 2) as f64), my + 10.0 * (y as f64)),
-                            Vec2::new(1000.0, 500.0),
-                            4.0,
-                            color(ctimer.time())
+        if mouse::Button::Left.is_pressed() {
+            f += 1;
+
+            if 25 < f {
+                let m : Vec2 = window.mouse_position().as_other();
+                for x in -10..11 {
+                    for y in -10..11 {
+                        fc += 0.01;
+                        p += 1;
+                        let r = 4.0;
+                        simulation.add(Box::new(
+                            Particle::new(
+                                m + Vec2::new(x as f64, y as f64) * (2.5 * r),
+                                Vec2::new(1000.0, 0.0) * r,
+                                r,
+                                color(&mut (1.0 * fc))
+                            )
                         )
-                    );
+                        );
+                    }
                 }
+                f = 0
             }
-            f = 0;
+        } else {
+            f = 10000;
         }
 
-        window.set_title(&format!("{} | {:6.4}", p, physics));
+        window.set_title(&format!("{} | {:5.1}", p, 1.0 / physics_avg));
 
         window.display();
     }
