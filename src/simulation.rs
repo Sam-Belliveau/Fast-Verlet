@@ -2,17 +2,18 @@ use crate::constants::*;
 use crate::particle::*;
 
 use crate::sfml::graphics::Drawable;
+use crate::stopwatch::StopWatch;
 
+use rayon::prelude::*;
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
-use rayon::prelude::*;
 
 use sfml::graphics::{
     PrimitiveType, RenderStates, RenderWindow, Vertex, VertexBuffer, VertexBufferUsage,
 };
 use sfml::system::Vector2f;
 
-const PARTITION_LENGTH: f64 = 24.0;
+const PARTITION_LENGTH: f64 = 32.0;
 
 type Accelerator = Box<dyn Fn(&Particle) -> Vec2 + Send + Sync + 'static>;
 type ParticleSet = Vec<Box<Particle>>;
@@ -24,7 +25,7 @@ pub struct Simulator {
     bounds: BoundingBox,
     accelerator: Accelerator,
 
-    thread_pool: ThreadPool
+    thread_pool: ThreadPool,
 }
 
 impl Simulator {
@@ -43,9 +44,9 @@ impl Simulator {
             partition_shape: shape,
 
             bounds: BoundingBox::new(Vec2::new(0.0, 0.0), size, 1000.0),
-            accelerator: accelerator,
+            accelerator,
 
-            thread_pool: ThreadPoolBuilder::new().num_threads(12).build().unwrap()
+            thread_pool: ThreadPoolBuilder::new().num_threads(16).build().unwrap(),
         }
     }
 
@@ -57,83 +58,82 @@ impl Simulator {
 
 impl Simulator {
     fn update_partitions(&mut self) {
-        let mut need_move = Vec::with_capacity(self.partition_shape.0 * self.partition_shape.1);
+        let mut col_updated = Vec::new();
 
         for (cx, column) in self.partitions.iter_mut().enumerate() {
             for (cy, row) in column.iter_mut().enumerate() {
-                need_move.extend(row.drain_filter(|particle| {
-                    let (x, y) = self.bounds.get_partition(&particle, self.partition_shape);
+                col_updated.extend(row.drain_filter(|particle| {
+                    let (x, y) = self.bounds.get_partition(particle, self.partition_shape);
                     x != cx || y != cy
-                }));
+                }))
             }
         }
 
-        for particle in need_move {
+        for particle in col_updated {
             self.add(particle);
         }
     }
 
-    fn update_set_collisions(a_set: &mut ParticleSet) {
-        for i in 1..a_set.len() {
-            let (left, right) = a_set.split_at_mut(i);
+    fn collide_set(dt: Secs, set: &mut ParticleSet) {
+        for i in 1..set.len() {
+            let (left, right) = set.split_at_mut(i);
             if let Some(particle) = right.first_mut() {
                 for other in left.iter_mut() {
-                    particle.update_collision(other);
+                    particle.update_collision(dt, other);
                 }
             }
         }
     }
 
-    fn update_set_to_set_collisions(a_set: &mut ParticleSet, b_set_opt: Option<&mut ParticleSet>) {
-        if let Some(b_set) = b_set_opt {
-            if b_set.is_empty() {
-                return;
-            }
+    fn collide_set_with_set(
+        dt: Secs,
+        a_set: &mut ParticleSet,
+        b_set: &mut ParticleSet,
+    ) {
+        if b_set.is_empty() {
+            return;
+        }
 
-            for a in a_set.iter_mut() {
-                for b in b_set.iter_mut() {
-                    a.update_collision(b);
-                }
+        for a in a_set.iter_mut() {
+            for b in b_set.iter_mut() {
+                a.update_collision(dt, b);
             }
         }
     }
 
-    fn update_columns_collisions(
-        left: &mut [ParticleSet],
-        right: &mut [ParticleSet],
-    ) {
-        Self::update_column_collisions(left);
-
-        for (i, set) in left.iter_mut().enumerate() {
-            Self::update_set_to_set_collisions(set, right.get_mut(i - 1));
+    fn collide_column(dt: Secs, col: &mut [ParticleSet]) {
+        for set in col.iter_mut() {
+            Self::collide_set(dt, set);
         }
 
-        for (i, set) in left.iter_mut().enumerate() {
-            Self::update_set_to_set_collisions(set, right.get_mut(i + 0));
-        }
-
-        for (i, set) in left.iter_mut().enumerate() {
-            Self::update_set_to_set_collisions(set, right.get_mut(i + 1));
-        }
-    }
-
-    fn update_column_collisions(
-        col: &mut [ParticleSet]
-    ) {
         for pair in col[0..].chunks_exact_mut(2) {
             if let [a, b] = pair {
-                Self::update_set_to_set_collisions(a, Some(b));
+                Self::collide_set_with_set(dt, a, b);
             }
         }
 
         for pair in col[1..].chunks_exact_mut(2) {
             if let [a, b] = pair {
-                Self::update_set_to_set_collisions(a, Some(b));
+                Self::collide_set_with_set(dt, a, b);
             }
         }
     }
 
-    fn update_column(
+    fn collide_column_with_column(dt: Secs, left: &mut [ParticleSet], right: &mut [ParticleSet]) {
+        for (left_set, right_set) in left[1..].iter_mut().zip(right[0..].iter_mut()) {
+            Self::collide_set_with_set(dt, left_set, right_set);
+        }
+
+        for (left_set, right_set) in left[0..].iter_mut().zip(right[0..].iter_mut()) {
+            Self::collide_set_with_set(dt, left_set, right_set);
+        }
+
+        for (left_set, right_set) in left[0..].iter_mut().zip(right[1..].iter_mut()) {
+            Self::collide_set_with_set(dt, left_set, right_set);
+        }
+    }
+
+    fn physics_step_column(
         dt: Secs,
         accelerator: &Accelerator,
         bounds: &BoundingBox,
@@ -141,40 +141,53 @@ impl Simulator {
     ) {
         for set in column.iter_mut() {
             for particle in set.iter_mut() {
-                particle.update_verlet(dt, accelerator(&particle));
+                particle.update_verlet(dt, accelerator(particle));
                 bounds.update_bounds(particle);
             }
-
-            Self::update_set_collisions(set);
         }
     }
 
-    fn update_physics<'a>(&mut self, dt: Secs) {
+    fn update_physics(&mut self, dt: Secs) {
         let chunk_updater = |columns: &mut [Vec<ParticleSet>]| {
-            match columns {
-                [left, right] => {
-                    Self::update_column(dt, &self.accelerator, &self.bounds, left);
-                    Self::update_columns_collisions(left, right);
-                },
+            for col in columns.iter_mut() {
+                Self::physics_step_column(dt, &self.accelerator, &self.bounds, col);
+                Self::collide_column(dt, col);
+            }
 
-                [col] => {
-                    Self::update_column(dt, &self.accelerator, &self.bounds, col);
-                    Self::update_column_collisions(col);
-                },
-
-                _ => panic!("columns are deformed size!"),
+            if let [left, right] = columns {
+                Self::collide_column_with_column(dt, left, right);
             }
         };
 
         self.thread_pool.install(|| {
-            self.partitions[0..].par_chunks_mut(2).for_each(chunk_updater);
-            self.partitions[1..].par_chunks_mut(2).for_each(chunk_updater);
+            self.partitions[0..]
+                .par_chunks_mut(2)
+                .for_each(chunk_updater);
+            self.partitions[1..]
+                .par_chunks_mut(2)
+                .for_each(chunk_updater);
         });
     }
 
     pub fn step(&mut self, dt: Secs) {
+        static mut part_avg : f64 = 0.0;
+        static mut phy_avg : f64  = 0.0;
+
+        let mut timer = StopWatch::new();
         self.update_partitions();
+        let part = timer.reset();
         self.update_physics(dt);
+        let phy = timer.reset();
+
+        unsafe {
+            part_avg += (part - part_avg) * 0.01;
+            phy_avg += (phy - phy_avg) * 0.01;
+
+            println!("+------------------+");
+            println!("|Partition: {:7.5}|", part_avg);
+            println!("|Physics:   {:7.5}|", phy_avg);
+            println!("+------------------+\n");
+        }
     }
 
     pub fn step_substeps(&mut self, dt: Secs, substeps: i32) {
@@ -222,7 +235,7 @@ impl Simulator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct BoundingBox {
     min: Vec2,
     max: Vec2,
@@ -235,10 +248,10 @@ impl BoundingBox {
         let min = Vec2::new(a.x.min(b.x), a.y.min(b.y));
         let max = Vec2::new(a.x.max(b.x), a.y.max(b.y));
         BoundingBox {
-            min: min,
-            max: max,
+            min,
+            max,
             area: max - min,
-            r: r,
+            r,
         }
     }
 

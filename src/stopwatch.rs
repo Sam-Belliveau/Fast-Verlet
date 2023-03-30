@@ -7,6 +7,14 @@ pub struct StopWatch {
     zero: Instant
 }
 
+impl Default for StopWatch {
+
+    fn default() -> StopWatch {
+        StopWatch::new()
+    }
+
+}
+
 impl StopWatch {
 
     pub fn new() -> StopWatch {

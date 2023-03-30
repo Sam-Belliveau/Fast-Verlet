@@ -37,20 +37,22 @@ fn main() {
         &Default::default(),
     );
 
-    window.set_framerate_limit(60);
+    const FPS: u32 = 120;
+
+    window.set_framerate_limit(FPS);
 
     let mut simulation = Simulator::new(Vec2::new(3600.0, 2400.0), Box::new(|_|{
         // let offset = particle.pos - Vec2::new(1800.0, 1200.0);
 
         // offset / offset.length_sq().max(10.0) * -10000000.0
-        Vec2::new(0.0, 1000.0)
+        Vec2::new(0.0, 500.0)
     }));
 
-    let mut timer = StopWatch::new();
+    let mut timer = StopWatch::default();
     let mut fc = 0.0;
-    let mut f = 0;
     let mut p = 0;
     let mut physics_avg = 0.00;
+    let mut b = false;
     while window.is_open() {
         while let Some(event) = window.poll_event() {
             match event {
@@ -64,37 +66,33 @@ fn main() {
 
 
         timer.reset();
-        simulation.step_substeps(1.0 / 120.0, 4);
+        simulation.step_substeps(1.0 / (FPS as f64), 8);
         let physics = timer.reset();
         physics_avg += (physics - physics_avg) * 0.5;
         simulation.draw(&mut window);
         timer.reset();
 
-        if mouse::Button::Left.is_pressed() {
-            f += 1;
-
-            if 25 < f {
-                let m : Vec2 = window.mouse_position().as_other();
-                for x in -10..11 {
-                    for y in -10..11 {
-                        fc += 0.01;
-                        p += 1;
-                        let r = 4.0;
-                        simulation.add(Box::new(
-                            Particle::new(
-                                m + Vec2::new(x as f64, y as f64) * (2.5 * r),
-                                Vec2::new(1000.0, 0.0) * r,
-                                r,
-                                color(&mut (1.0 * fc))
-                            )
+        if !b && mouse::Button::Left.is_pressed() {
+            b = true;
+            let m : Vec2 = window.mouse_position().as_other();
+            for x in -10..=10 {
+                for y in -10..=10 {
+                    fc += 0.001;
+                    p += 1;
+                    let r = 6.0;
+                    simulation.add(Box::new(
+                        Particle::new(
+                            m + Vec2::new(x as f64, -y as f64) * (2.0 * r),
+                            Vec2::new(100.0, 0.0) * r,
+                            r,
+                            color(&mut (1.0 * fc))
                         )
-                        );
-                    }
+                    )
+                    );
                 }
-                f = 0
             }
         } else {
-            f = 10000;
+            b = mouse::Button::Left.is_pressed();
         }
 
         window.set_title(&format!("{} | {:5.1}", p, 1.0 / physics_avg));
