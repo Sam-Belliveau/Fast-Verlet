@@ -1,5 +1,3 @@
-#![feature(drain_filter)]
-
 extern crate sfml;
 
 pub mod constants;
@@ -15,8 +13,7 @@ use constants::*;
 
 use simulation::Simulator;
 use particle::Particle;
-use stopwatch::StopWatch;
-
+ 
 use sfml::graphics::{RenderWindow, RenderTarget, Color};
 use sfml::window::{Style, Event, mouse};
 
@@ -35,7 +32,7 @@ fn main() {
         "SFML Example",
         Style::CLOSE,
         &Default::default(),
-    );
+    ).expect("Cannot create a new Render Window");
 
     const FPS: u32 = 120;
 
@@ -48,10 +45,8 @@ fn main() {
         Vec2::new(0.0, 500.0)
     }));
 
-    let mut timer = StopWatch::default();
     let mut fc = 0.0;
     let mut p = 0;
-    let mut physics_avg = 0.00;
     let mut b = false;
     while window.is_open() {
         while let Some(event) = window.poll_event() {
@@ -64,13 +59,8 @@ fn main() {
 
         window.clear(sfml::graphics::Color::BLACK);
 
-
-        timer.reset();
-        simulation.step_substeps(1.0 / (FPS as f64), 8);
-        let physics = timer.reset();
-        physics_avg += (physics - physics_avg) * 0.5;
+        simulation.step();
         simulation.draw(&mut window);
-        timer.reset();
 
         if !b && mouse::Button::Left.is_pressed() {
             b = true;
@@ -95,7 +85,7 @@ fn main() {
             b = mouse::Button::Left.is_pressed();
         }
 
-        window.set_title(&format!("{} | {:5.1}", p, 1.0 / physics_avg));
+        window.set_title(&format!("{} | {:5.1}", p, 1.0 / simulation.total_dt()));
 
         window.display();
     }

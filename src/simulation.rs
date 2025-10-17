@@ -26,6 +26,11 @@ pub struct Simulator {
     accelerator: Accelerator,
 
     thread_pool: ThreadPool,
+
+    step_size: Secs,
+
+    partition_dt_avg: Secs,
+    physics_dt_avg: Secs,
 }
 
 impl Simulator {
@@ -47,6 +52,11 @@ impl Simulator {
             accelerator,
 
             thread_pool: ThreadPoolBuilder::new().num_threads(16).build().unwrap(),
+            
+            step_size: 1.0 / 120.0,
+
+            partition_dt_avg: 0.0,
+            physics_dt_avg: 0.0,
         }
     }
 
@@ -62,7 +72,7 @@ impl Simulator {
 
         for (cx, column) in self.partitions.iter_mut().enumerate() {
             for (cy, row) in column.iter_mut().enumerate() {
-                col_updated.extend(row.drain_filter(|particle| {
+                col_updated.extend(row.extract_if(.., |particle| {
                     let (x, y) = self.bounds.get_partition(particle, self.partition_shape);
                     x != cx || y != cy
                 }))
@@ -85,77 +95,78 @@ impl Simulator {
         }
     }
 
-    fn collide_set_with_set(
-        dt: Secs,
-        a_set: &mut ParticleSet,
-        b_set: &mut ParticleSet,
-    ) {
+    fn collide_set_with_set(step_size: Secs, a_set: &mut ParticleSet, b_set: &mut ParticleSet) {
         if b_set.is_empty() {
             return;
         }
 
         for a in a_set.iter_mut() {
             for b in b_set.iter_mut() {
-                a.update_collision(dt, b);
+                a.update_collision(step_size, b);
             }
         }
     }
 
-    fn collide_column(dt: Secs, col: &mut [ParticleSet]) {
+    fn collide_column(step_size: Secs, col: &mut [ParticleSet]) {
         for set in col.iter_mut() {
-            Self::collide_set(dt, set);
+            Self::collide_set(step_size, set);
         }
 
         for pair in col[0..].chunks_exact_mut(2) {
             if let [a, b] = pair {
-                Self::collide_set_with_set(dt, a, b);
+                Self::collide_set_with_set(step_size, a, b);
             }
         }
 
         for pair in col[1..].chunks_exact_mut(2) {
             if let [a, b] = pair {
-                Self::collide_set_with_set(dt, a, b);
+                Self::collide_set_with_set(step_size, a, b);
             }
         }
     }
 
-    fn collide_column_with_column(dt: Secs, left: &mut [ParticleSet], right: &mut [ParticleSet]) {
+    fn collide_column_with_column(
+        step_size: Secs,
+        left: &mut [ParticleSet],
+        right: &mut [ParticleSet],
+    ) {
         for (left_set, right_set) in left[1..].iter_mut().zip(right[0..].iter_mut()) {
-            Self::collide_set_with_set(dt, left_set, right_set);
+            Self::collide_set_with_set(step_size, left_set, right_set);
         }
 
         for (left_set, right_set) in left[0..].iter_mut().zip(right[0..].iter_mut()) {
-            Self::collide_set_with_set(dt, left_set, right_set);
+            Self::collide_set_with_set(step_size, left_set, right_set);
         }
 
         for (left_set, right_set) in left[0..].iter_mut().zip(right[1..].iter_mut()) {
-            Self::collide_set_with_set(dt, left_set, right_set);
+            Self::collide_set_with_set(step_size, left_set, right_set);
         }
     }
 
     fn physics_step_column(
-        dt: Secs,
+        step_size: Secs,
         accelerator: &Accelerator,
         bounds: &BoundingBox,
         column: &mut [ParticleSet],
     ) {
         for set in column.iter_mut() {
             for particle in set.iter_mut() {
-                particle.update_verlet(dt, accelerator(particle));
+                particle.update_verlet(step_size, accelerator(particle));
                 bounds.update_bounds(particle);
             }
         }
     }
 
-    fn update_physics(&mut self, dt: Secs) {
+    fn update_physics(&mut self) {
+        let step_size = self.step_size;
         let chunk_updater = |columns: &mut [Vec<ParticleSet>]| {
             for col in columns.iter_mut() {
-                Self::physics_step_column(dt, &self.accelerator, &self.bounds, col);
-                Self::collide_column(dt, col);
+                Self::physics_step_column(step_size, &self.accelerator, &self.bounds, col);
+                Self::collide_column(step_size, col);
             }
 
             if let [left, right] = columns {
-                Self::collide_column_with_column(dt, left, right);
+                Self::collide_column_with_column(step_size, left, right);
             }
         };
 
@@ -169,33 +180,24 @@ impl Simulator {
         });
     }
 
-    pub fn step(&mut self, dt: Secs) {
-        static mut part_avg : f64 = 0.0;
-        static mut phy_avg : f64  = 0.0;
-
+    pub fn step(&mut self) {
         let mut timer = StopWatch::new();
         self.update_partitions();
-        let part = timer.reset();
-        self.update_physics(dt);
-        let phy = timer.reset();
+        let partition = timer.reset();
+        self.update_physics();
+        let physics = timer.reset();
 
-        unsafe {
-            part_avg += (part - part_avg) * 0.01;
-            phy_avg += (phy - phy_avg) * 0.01;
+        let average_rc = 1.0;
+        let dt = physics + partition;
+        let alpha = -f64::exp_m1(-dt / average_rc);
 
-            println!("+------------------+");
-            println!("|Partition: {:7.5}|", part_avg);
-            println!("|Physics:   {:7.5}|", phy_avg);
-            println!("+------------------+\n");
-        }
-    }
+        self.partition_dt_avg += alpha * (partition - self.partition_dt_avg);
+        self.physics_dt_avg += alpha * (physics - self.physics_dt_avg);
 
-    pub fn step_substeps(&mut self, dt: Secs, substeps: i32) {
-        let substep_dt = dt / f64::from(substeps);
-
-        for _ in 0..substeps {
-            self.step(substep_dt);
-        }
+        println!("+------------------+");
+        println!("|Partition: {:7.5}|", self.partition_dt_avg);
+        println!("|Physics:   {:7.5}|", self.physics_dt_avg);
+        println!("+------------------+\n");
     }
 
     pub fn draw(&mut self, window: &mut RenderWindow) {
@@ -220,18 +222,24 @@ impl Simulator {
 
         let mut buffer = VertexBuffer::new(
             PrimitiveType::QUADS,
-            vertex_buffer.len() as u32,
+            vertex_buffer.len(),
             VertexBufferUsage::STREAM,
-        );
+        )
+        .expect("Could not allocate vertex buffer");
 
-        buffer.update(&vertex_buffer, 0);
-
+        buffer
+            .update(&vertex_buffer, 0)
+            .expect("SFML Update Failed");
         buffer.draw(window, &RenderStates::DEFAULT);
     }
 
     pub fn clear(&mut self) -> &mut Self {
         self.partitions = Self::default_partition(self.partition_shape);
         self
+    }
+
+    pub fn total_dt(&self) -> Secs {
+        self.partition_dt_avg + self.physics_dt_avg
     }
 }
 
