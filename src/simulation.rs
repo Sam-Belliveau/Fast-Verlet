@@ -13,7 +13,7 @@ use sfml::graphics::{
 };
 use sfml::system::Vector2f;
 
-const PARTITION_LENGTH: f64 = 32.0;
+const PARTITION_LENGTH: f64 = 64.0;
 
 type Accelerator = Box<dyn Fn(&Particle) -> Vec2 + Send + Sync + 'static>;
 type ParticleSet = Vec<Box<Particle>>;
@@ -27,10 +27,8 @@ pub struct Simulator {
 
     thread_pool: ThreadPool,
 
-    step_size: Secs,
-
-    partition_dt_avg: Secs,
-    physics_dt_avg: Secs,
+    pub partition_dt_avg: Secs,
+    pub physics_dt_avg: Secs,
 }
 
 impl Simulator {
@@ -48,12 +46,10 @@ impl Simulator {
             partitions: Self::default_partition(shape),
             partition_shape: shape,
 
-            bounds: BoundingBox::new(Vec2::new(0.0, 0.0), size, 1000.0),
+            bounds: BoundingBox::new(Vec2::new(0.0, 0.0), size, 100.0),
             accelerator,
 
             thread_pool: ThreadPoolBuilder::new().num_threads(16).build().unwrap(),
-            
-            step_size: 1.0 / 120.0,
 
             partition_dt_avg: 0.0,
             physics_dt_avg: 0.0,
@@ -84,93 +80,88 @@ impl Simulator {
         }
     }
 
-    fn collide_set(dt: Secs, set: &mut ParticleSet) {
+    fn collide_set(set: &mut ParticleSet) {
         for i in 1..set.len() {
             let (left, right) = set.split_at_mut(i);
             if let Some(particle) = right.first_mut() {
                 for other in left.iter_mut() {
-                    particle.update_collision(dt, other);
+                    particle.update_collision(other);
                 }
             }
         }
     }
 
-    fn collide_set_with_set(step_size: Secs, a_set: &mut ParticleSet, b_set: &mut ParticleSet) {
+    fn collide_set_with_set(a_set: &mut ParticleSet, b_set: &mut ParticleSet) {
         if b_set.is_empty() {
             return;
         }
 
         for a in a_set.iter_mut() {
             for b in b_set.iter_mut() {
-                a.update_collision(step_size, b);
+                a.update_collision(b);
             }
         }
     }
 
-    fn collide_column(step_size: Secs, col: &mut [ParticleSet]) {
+    fn collide_column(col: &mut [ParticleSet]) {
         for set in col.iter_mut() {
-            Self::collide_set(step_size, set);
+            Self::collide_set(set);
         }
 
         for pair in col[0..].chunks_exact_mut(2) {
             if let [a, b] = pair {
-                Self::collide_set_with_set(step_size, a, b);
+                Self::collide_set_with_set(a, b);
             }
         }
 
         for pair in col[1..].chunks_exact_mut(2) {
             if let [a, b] = pair {
-                Self::collide_set_with_set(step_size, a, b);
+                Self::collide_set_with_set(a, b);
             }
         }
     }
 
-    fn collide_column_with_column(
-        step_size: Secs,
-        left: &mut [ParticleSet],
-        right: &mut [ParticleSet],
-    ) {
+    fn collide_column_with_column(left: &mut [ParticleSet], right: &mut [ParticleSet]) {
         for (left_set, right_set) in left[1..].iter_mut().zip(right[0..].iter_mut()) {
-            Self::collide_set_with_set(step_size, left_set, right_set);
+            Self::collide_set_with_set(left_set, right_set);
         }
 
         for (left_set, right_set) in left[0..].iter_mut().zip(right[0..].iter_mut()) {
-            Self::collide_set_with_set(step_size, left_set, right_set);
+            Self::collide_set_with_set(left_set, right_set);
         }
 
         for (left_set, right_set) in left[0..].iter_mut().zip(right[1..].iter_mut()) {
-            Self::collide_set_with_set(step_size, left_set, right_set);
+            Self::collide_set_with_set(left_set, right_set);
         }
     }
 
     fn physics_step_column(
-        step_size: Secs,
         accelerator: &Accelerator,
         bounds: &BoundingBox,
         column: &mut [ParticleSet],
     ) {
         for set in column.iter_mut() {
             for particle in set.iter_mut() {
-                particle.update_verlet(step_size, accelerator(particle));
+                particle.update_verlet(accelerator(particle));
                 bounds.update_bounds(particle);
             }
         }
     }
 
     fn update_physics(&mut self) {
-        let step_size = self.step_size;
-        let chunk_updater = |columns: &mut [Vec<ParticleSet>]| {
-            for col in columns.iter_mut() {
-                Self::physics_step_column(step_size, &self.accelerator, &self.bounds, col);
-                Self::collide_column(step_size, col);
-            }
+        let column_updater = |column: &mut Vec<ParticleSet>| {
+            Self::physics_step_column(&self.accelerator, &self.bounds, column);
+            Self::collide_column(column);
+        };
 
+        let chunk_updater = |columns: &mut [Vec<ParticleSet>]| {
             if let [left, right] = columns {
-                Self::collide_column_with_column(step_size, left, right);
+                Self::collide_column_with_column(left, right);
             }
         };
 
         self.thread_pool.install(|| {
+            self.partitions.par_iter_mut().for_each(column_updater);
             self.partitions[0..]
                 .par_chunks_mut(2)
                 .for_each(chunk_updater);
@@ -193,11 +184,6 @@ impl Simulator {
 
         self.partition_dt_avg += alpha * (partition - self.partition_dt_avg);
         self.physics_dt_avg += alpha * (physics - self.physics_dt_avg);
-
-        println!("+------------------+");
-        println!("|Partition: {:7.5}|", self.partition_dt_avg);
-        println!("|Physics:   {:7.5}|", self.physics_dt_avg);
-        println!("+------------------+\n");
     }
 
     pub fn draw(&mut self, window: &mut RenderWindow) {
@@ -255,6 +241,10 @@ impl BoundingBox {
     pub fn new(a: Vec2, b: Vec2, r: f64) -> BoundingBox {
         let min = Vec2::new(a.x.min(b.x), a.y.min(b.y));
         let max = Vec2::new(a.x.max(b.x), a.y.max(b.y));
+
+        debug_assert!(2.0 * r < max.x - min.x, "Bounding box too small in x-axis");
+        debug_assert!(2.0 * r < max.y - min.y, "Bounding box too small in y-axis");
+
         BoundingBox {
             min,
             max,

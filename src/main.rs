@@ -28,7 +28,7 @@ fn color(t: &mut f64) -> Color {
 
 fn main() {
     let mut window = RenderWindow::new(
-        (800, 600),
+        (WIDTH, HEIGHT),
         "SFML Example",
         Style::DEFAULT,
         &Default::default(),
@@ -40,25 +40,21 @@ fn main() {
     window.set_framerate_limit(FPS);
 
     let mut simulation = Simulator::new(
-        Vec2::new(window.size().x as f64, window.size().y as f64),
+        Vec2::new(WIDTH as f64, HEIGHT as f64),
         Box::new(|_| {
-            // let offset = particle.pos - Vec2::new(1800.0, 1200.0);
-            // offset / offset.length_sq().max(10.0) * -10000000.0
-
-            Vec2::new(0.0, 500.0)
+            Vec2::new(0.0, 0.05)
         }),
     );
 
-    let mut fc = 0.0;
-    let mut p = 0;
-    let mut b = false;
+    let mut particles: i32 = 0;
+    let mut pressed = false;
+
     while window.is_open() {
         while let Some(event) = window.poll_event() {
             match event {
                 Event::Closed => window.close(),
                 Event::KeyPressed { .. } => {
-                    fc = 0.0;
-                    p = 0;
+                    particles = 0;
                     simulation.clear();
                 }
                 _ => (),
@@ -70,27 +66,30 @@ fn main() {
         simulation.step();
         simulation.draw(&mut window);
 
-        if !b && mouse::Button::Left.is_pressed() {
-            b = true;
+        if !pressed && mouse::Button::Left.is_pressed() {
+            pressed = true;
             let m: Vec2 = window.mouse_position().as_other();
             for x in -10..=10 {
                 for y in -10..=10 {
-                    fc += 0.001;
-                    p += 1;
-                    let r = 6.0;
+                    particles += 1;
+                    let r = K_RADIUS;
+
                     simulation.add(Box::new(Particle::new(
                         m + Vec2::new(x as f64, -y as f64) * (2.0 * r),
-                        Vec2::new(100.0, 0.0) * r,
+                        Vec2::new(0.0, 0.0) * r,
                         r,
-                        color(&mut (1.0 * fc)),
+                        color(&mut (0.001 * (particles as f64))),
                     )));
                 }
             }
         } else {
-            b = mouse::Button::Left.is_pressed();
+            pressed = mouse::Button::Left.is_pressed();
         }
 
-        window.set_title(&format!("{} | {:5.1}", p, 1.0 / simulation.total_dt()));
+        let simulation_dt = simulation.total_dt();
+        let simulation_fps = 1.0 / simulation_dt;
+
+        window.set_title(&format!("{} | Max FPS: {:5.1}", particles, simulation_fps));
 
         window.display();
     }

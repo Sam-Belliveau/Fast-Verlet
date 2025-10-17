@@ -8,7 +8,6 @@ pub struct Particle {
 
     pub radius: f64,
     pub color: Color,
-    prev_dt: f64,
 }
 
 impl Particle {
@@ -17,50 +16,31 @@ impl Particle {
             pos,
             prev_pos: pos - vel,
             radius: radius.abs(),
-            color,
-            prev_dt: 1.0,
+            color
         }
     }
 
-    pub fn update_verlet(&mut self, dt: Secs, accel: Vec2) {
-        let pos = self.pos;
-        let vel = (self.pos - self.prev_pos) / self.prev_dt;
-        let accel = accel - vel * K_FRICTION;
-
-        self.pos = pos + vel * (dt) + accel * (dt * dt);
-        self.prev_pos = pos;
-        self.prev_dt = dt;
+    pub fn update_verlet(&mut self, accel: Vec2) {
+        let new_pos = self.pos * 2.0 - self.prev_pos + accel;
+        self.prev_pos = self.pos;
+        self.pos = new_pos;
     }
 
-    fn force(d: f64, dt: Secs) -> f64 {
-        if 0.0 <= d {
-            1.0
-        } else {
-            let k = dt * dt * K_STICKINESS * K_STICKINESS;
-            k / (k + d * d)
+    pub fn update_collision(&mut self, other: &mut Particle) {
+        let difference = self.pos - other.pos;
+        let min_distance = self.radius + other.radius;
+
+        let distance_sq = difference.length_sq();
+        let min_distanec_sq = min_distance * min_distance;
+
+        if distance_sq <= min_distanec_sq {
+            let distance = distance_sq.sqrt();
+
+            let delta = min_distance - distance;
+            let correction = difference * (0.5 * delta / distance) * K_COLLISION_PRESSURE;
+
+            self.pos += correction;
+            other.pos -= correction;
         }
-    }
-
-    pub fn update_collision(&mut self, dt: Secs, other: &mut Particle) {
-        let delta = self.pos - other.pos;
-        let mut space = self.radius + other.radius;
-
-        let distance = delta.length_sq().sqrt().max(1.0);
-
-        // if the particle was previously on the other side,
-        // the collision should treat as if we were colliding from that side.
-        if delta.dot(self.prev_pos - other.prev_pos) < 0.0 {
-            space = -space;
-        }
-
-        let d = space - distance;
-        let force = Self::force(d, dt);
-
-        if K_MIN_FORCE <= force {
-            let push = delta * (d * force * 0.5 * K_COLLISION_PRESSURE / distance);
-            self.pos += push;
-            other.pos -= push;
-        }
-
     }
 }
