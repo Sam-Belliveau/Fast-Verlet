@@ -42,12 +42,11 @@ fn main() {
     let mut simulation = Simulator::new(
         Vec2::new(WIDTH as f64, HEIGHT as f64),
         Box::new(|_| {
-            Vec2::new(0.0, 0.05)
+            Vec2::new(0.0, 0.02)
         }),
     );
 
     let mut particles: i32 = 0;
-    let mut pressed = false;
 
     while window.is_open() {
         while let Some(event) = window.poll_event() {
@@ -66,24 +65,21 @@ fn main() {
         simulation.step();
         simulation.draw(&mut window);
 
-        if !pressed && mouse::Button::Left.is_pressed() {
-            pressed = true;
+        if mouse::Button::Left.is_pressed() {
             let m: Vec2 = window.mouse_position().as_other();
             for x in -10..=10 {
-                for y in -10..=10 {
+                for y in 0..=0 {
                     particles += 1;
                     let r = K_RADIUS;
 
                     simulation.add(Box::new(Particle::new(
                         m + Vec2::new(x as f64, -y as f64) * (2.0 * r),
-                        Vec2::new(0.0, 0.0) * r,
+                        Vec2::new(-0.01 * (x as f64), 1.0) * r,
                         r,
                         color(&mut (0.001 * (particles as f64))),
                     )));
                 }
             }
-        } else {
-            pressed = mouse::Button::Left.is_pressed();
         }
 
         let simulation_dt = simulation.total_dt();

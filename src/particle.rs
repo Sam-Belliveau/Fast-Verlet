@@ -21,7 +21,7 @@ impl Particle {
     }
 
     pub fn update_verlet(&mut self, accel: Vec2) {
-        let new_pos = self.pos * 2.0 - self.prev_pos + accel;
+        let new_pos = self.pos + (self.pos - self.prev_pos) * (1.0 - K_FRICTION) + accel;
         self.prev_pos = self.pos;
         self.pos = new_pos;
     }
